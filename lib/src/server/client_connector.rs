@@ -98,7 +98,7 @@ impl ClientConnector {
       }
     });
 
-    // Create a thread for each reciever
+   
     let mut ipc_clone = self.clone();
     let mut proc_clone = self.clone();
     let mut ws_clone = self.clone();
