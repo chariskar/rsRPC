@@ -32,8 +32,8 @@ pub struct ClientConnector {
   pub clients: Arc<Mutex<HashMap<u64, Responder>>>,
   data_on_connect: String,
 
-  pub last_pid: Option<u64>,
-  pub active_socket: Option<String>,
+  pub last_pid: Arc<Mutex<Option<u64>>>,
+  pub active_socket: Arc<Mutex<Option<String>>>,
 
   pub ipc_event_rec: Arc<Mutex<std::sync::mpsc::Receiver<ActivityCmd>>>,
   pub proc_event_rec: Arc<Mutex<std::sync::mpsc::Receiver<ProcessDetectedEvent>>>,
@@ -59,8 +59,8 @@ impl ClientConnector {
       data_on_connect,
       port,
 
-      last_pid: None,
-      active_socket: None,
+      last_pid: Arc::new(Mutex::new(None)),
+      active_socket: Arc::new(Mutex::new(None)),
 
       ipc_event_rec: Arc::new(Mutex::new(ipc_event_rec)),
       proc_event_rec: Arc::new(Mutex::new(proc_event_rec)),
@@ -77,10 +77,8 @@ impl ClientConnector {
         match clone.server.lock().unwrap().poll_event() {
           Event::Connect(client_id, responder) => {
             log!("[Client Connector] Client {} connected", client_id);
-
             // Send initial connection data
             responder.send(Message::Text(clone.data_on_connect.clone()));
-
             clients_clone.lock().unwrap().insert(client_id, responder);
           }
           Event::Disconnect(client_id) => {
@@ -129,11 +127,8 @@ impl ClientConnector {
           let pid = args.pid.unwrap_or_default();
           // Send empty payload
           let payload = empty_activity(pid, pid.to_string());
-
           log!("[Client Connector] Sending empty payload");
-
           ipc_clone.send_data(payload);
-
           continue;
         }
 
@@ -177,36 +172,29 @@ impl ClientConnector {
 
         if proc_activity.id == "null" {
           // If our last socket id is empty, skip
-          if proc_clone.active_socket.is_none() {
+          if proc_clone.active_socket.lock().unwrap().is_none() {
             continue;
           }
-
           // Send an empty payload
           log!("[Client Connector] Sending empty payload");
-
           let payload = empty_activity(
-            proc_clone.last_pid.unwrap_or_default(),
-            proc_clone.active_socket.as_ref().unwrap().clone(),
+            (*proc_clone.last_pid.lock().unwrap()).unwrap_or_default(),
+            proc_clone.active_socket.lock().unwrap().clone().unwrap_or_default(),
           );
-
           proc_clone.send_data(payload);
-
-          proc_clone.active_socket = None;
-
+          *proc_clone.active_socket.lock().unwrap() = None;
           continue;
         }
 
         // If the active socket is different from the current socket, send an empty payload for the old socket
-        if proc_clone.active_socket != Some(proc_activity.id.clone()) {
-          if proc_clone.active_socket.is_some() {
+        if *proc_clone.active_socket.lock().unwrap() != Some(proc_activity.id.clone()) {
+          if proc_clone.active_socket.lock().unwrap().is_some() {
             // Send an empty payload
             log!("[Client Connector] Sending empty payload");
-
             let payload = empty_activity(
-              proc_clone.last_pid.unwrap_or_default(),
-              proc_clone.active_socket.as_ref().unwrap().clone(),
+              (*proc_clone.last_pid.lock().unwrap()).unwrap_or_default(),
+              proc_clone.active_socket.lock().unwrap().clone().unwrap_or_default(),
             );
-
             proc_clone.send_data(payload);
           }
         } else {
@@ -242,8 +230,8 @@ impl ClientConnector {
           proc_activity.id
         );
 
-        proc_clone.last_pid = proc_activity.pid;
-        proc_clone.active_socket = Some(proc_activity.id.clone());
+        *proc_clone.last_pid.lock().unwrap() = proc_activity.pid;
+        *proc_clone.active_socket.lock().unwrap() = Some(proc_activity.id.clone());
 
         log!(
           "[Client Connector] Sending payload for activity: {}",
@@ -265,12 +253,9 @@ impl ClientConnector {
         }
 
         if ws_event.cmd != "SET_ACTIVITY" {
-          // Just send the event as-is, there isn't really anything to go off of here
-          // I will change this if arRPC implements things like INVITE_BROWSER event responses, to ensure compatibility
           let payload = serde_json::to_string(&ws_event).unwrap_or("".to_string());
           log!("[Client Connector] Sending payload for WS event");
           ws_clone.send_data(payload);
-
           continue;
         }
 
@@ -286,13 +271,9 @@ impl ClientConnector {
 
         if args.activity.is_none() {
           let pid = args.pid.unwrap_or_default();
-          // Send empty payload
           let payload = empty_activity(pid, pid.to_string());
-
           log!("[Client Connector] Sending empty payload");
-
           ws_clone.send_data(payload);
-
           continue;
         }
 
@@ -324,7 +305,7 @@ impl ClientConnector {
     });
   }
 
-  pub fn send_data(&mut self, data: String) {
+  pub fn send_data(&self, data: String) {
     // Send data to all clients
     for (_, responder) in self.clients.lock().unwrap().iter() {
       responder.send(Message::Text(data.clone()));
